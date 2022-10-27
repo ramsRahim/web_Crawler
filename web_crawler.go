@@ -2,116 +2,149 @@ package main
 
 import (
 	"fmt"
+	"net/http"
+	"os"
+	"strings"
+
+	log "github.com/llimllib/loglevel"
+	"golang.org/x/net/html"
+	"golang.org/x/net/html/atom"
 )
 
-type Fetcher interface {
-	// Fetch returns the body of URL and
-	// a slice of URLs found on that page.
-	Fetch(url string) (body string, urls []string, err error)
+type Link struct {
+	url   string
+	text  string
+	depth int
 }
 
-// Crawl uses fetcher to recursively crawl
-// pages starting with url, to a maximum of depth.
-func CrawlRecursive(url string, depth int, fetcher Fetcher, quit chan bool, visitedUrls map[string]bool) {
-	if depth <= 0 {
-		quit <- true
-		return
+type HttpError struct {
+	original string
+}
+
+func (self Link) String() string {
+	spacer := strings.Repeat("\t", self.depth)
+	return fmt.Sprintf("%s%s (%d) - %s", spacer, self.text, self.depth, self.url)
+}
+
+func (self Link) Valid() bool {
+	if self.depth >= MaxDepth {
+		return false
 	}
 
-	didIt, hasIt := visitedUrls[url]
-	// If we have already visited this link,
-	// stop here
-	if didIt && hasIt {
-		quit <- true
-		return
-
-	} else {
-		// Mark it has visited
-		visitedUrls[url] = true
+	if len(self.text) == 0 {
+		return false
+	}
+	if len(self.url) == 0 || strings.Contains(strings.ToLower(self.url), "javascript") {
+		return false
 	}
 
-	// Fetch children URLs
-	body, urls, err := fetcher.Fetch(url)
+	return true
+}
+
+func (self HttpError) Error() string {
+	return self.original
+}
+
+var MaxDepth = 2
+
+func LinkReader(resp *http.Response, depth int) []Link {
+	page := html.NewTokenizer(resp.Body)
+	links := []Link{}
+
+	var start *html.Token
+	var text string
+
+	for {
+		_ = page.Next()
+		token := page.Token()
+		if token.Type == html.ErrorToken {
+			break
+		}
+
+		if start != nil && token.Type == html.TextToken {
+			text = fmt.Sprintf("%s%s", text, token.Data)
+		}
+
+		if token.DataAtom == atom.A {
+			switch token.Type {
+			case html.StartTagToken:
+				if len(token.Attr) > 0 {
+					start = &token
+				}
+			case html.EndTagToken:
+				if start == nil {
+					log.Warnf("Link End found without Start: %s", text)
+					continue
+				}
+				link := NewLink(*start, text, depth)
+				if link.Valid() {
+					links = append(links, link)
+					log.Debugf("Link Found %v", link)
+				}
+
+				start = nil
+				text = ""
+			}
+		}
+	}
+
+	log.Debug(links)
+	return links
+}
+
+func NewLink(tag html.Token, text string, depth int) Link {
+	link := Link{text: strings.TrimSpace(text), depth: depth}
+
+	for i := range tag.Attr {
+		if tag.Attr[i].Key == "href" {
+			link.url = strings.TrimSpace(tag.Attr[i].Val)
+		}
+	}
+	return link
+}
+
+func recurDownloader(url string, depth int) {
+	page, err := downloader(url)
 	if err != nil {
-		fmt.Println(err)
-		quit <- true
+		log.Error(err)
 		return
 	}
-	fmt.Printf("found URL: %s ; title: %q\n", url, body)
+	links := LinkReader(page, depth)
 
-	// Crawl children URLs
-	childrenQuit := make(chan bool)
-	for _, childrenUrl := range urls {
-		go CrawlRecursive(childrenUrl, depth-1, fetcher, childrenQuit, visitedUrls)
-		// To exit goroutines. This channel will always be filled
-		<-childrenQuit
+	for _, link := range links {
+		fmt.Println(link)
+		if depth+1 < MaxDepth {
+			recurDownloader(link.url, depth+1)
+		}
+	}
+}
+
+func downloader(url string) (resp *http.Response, err error) {
+	log.Debugf("Downloading %s", url)
+	resp, err = http.Get(url)
+	if err != nil {
+		log.Debugf("Error: %s", err)
+		return
 	}
 
-	quit <- true
+	if resp.StatusCode > 299 {
+		err = HttpError{fmt.Sprintf("Error (%d): %s", resp.StatusCode, url)}
+		log.Debug(err)
+		return
+	}
+	return
+
 }
-
-func Crawl(url string, depth int, fetcher Fetcher) {
-	quit := make(chan bool)
-	// Say we haven't visited the first URL yet
-	visitedUrls := map[string]bool{url: false}
-
-	// Le'ts go, crawl from the given URL
-	go CrawlRecursive(url, depth, fetcher, quit, visitedUrls)
-
-	// We will not quit until we have something
-	// in the "quit" channel
-	<-quit
-}
-
 func main() {
-	Crawl("https://golang.org/", 4, fetcher)
-}
 
-// fakeFetcher is Fetcher that returns canned results.
-type fakeFetcher map[string]*fakeResult
+	log.SetPriorityString("info")
+	log.SetPrefix("crawler")
 
-type fakeResult struct {
-	body string
-	urls []string
-}
+	log.Debug(os.Args)
 
-func (f fakeFetcher) Fetch(url string) (string, []string, error) {
-	if res, ok := f[url]; ok {
-		return res.body, res.urls, nil
+	if len(os.Args) < 2 {
+		log.Fatalln("Missing Url arg")
 	}
-	return "", nil, fmt.Errorf("not found: %s", url)
-}
 
-// fetcher is a populated fakeFetcher.
-var fetcher = fakeFetcher{
-	"https://golang.org/": &fakeResult{
-		"The Go Programming Language",
-		[]string{
-			"https://golang.org/pkg/",
-			"https://golang.org/cmd/",
-		},
-	},
-	"https://golang.org/pkg/": &fakeResult{
-		"Packages",
-		[]string{
-			"https://golang.org/",
-			"https://golang.org/cmd/",
-			"https://golang.org/pkg/fmt/",
-			"https://golang.org/pkg/os/",
-		},
-	},
-	"https://golang.org/pkg/fmt/": &fakeResult{
-		"Package fmt",
-		[]string{
-			"https://golang.org/",
-			"https://golang.org/pkg/",
-		},
-	},
-	"https://golang.org/pkg/os/": &fakeResult{
-		"Package os",
-		[]string{
-			"https://golang.org/",
-			"https://golang.org/pkg/",
-		},
-	},
+	recurDownloader(os.Args[1], 0)
 }
