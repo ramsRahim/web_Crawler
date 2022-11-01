@@ -92,6 +92,36 @@ func LinkReader(resp *http.Response, depth int) []Link {
 	return links
 }
 
+func HtmlParse(resp *http.Response) string {
+	page := html.NewTokenizer(resp.Body)
+
+	//var start *html.Token
+	text := ""
+
+	for {
+		_ = page.Next()
+		token := page.Token()
+		if token.Type == html.ErrorToken {
+			break
+		}
+
+		/* if start != nil && token.Type == html.TextToken {
+			text = fmt.Sprintf("%s%s", text, token.Data)
+		} */
+
+		if token.DataAtom == atom.P {
+			text += token.Data
+			fmt.Printf("%s", text)
+		}
+		if token.DataAtom == atom.Span {
+			text += token.Data
+			fmt.Printf("%s", text)
+		}
+	}
+
+	return text
+}
+
 func NewLink(tag html.Token, text string, depth int) Link {
 	link := Link{text: strings.TrimSpace(text), depth: depth}
 
@@ -103,20 +133,23 @@ func NewLink(tag html.Token, text string, depth int) Link {
 	return link
 }
 
-func recurDownloader(url string, depth int) {
+func recurDownloader(url string, depth int) string {
 	page, err := downloader(url)
 	if err != nil {
 		log.Error(err)
-		return
+		return "error"
 	}
+	text := ""
+	text += HtmlParse(page)
+	//fmt.Printf("%s", text)
 	links := LinkReader(page, depth)
-
 	for _, link := range links {
-		fmt.Println(link)
 		if depth+1 < MaxDepth {
 			recurDownloader(link.url, depth+1)
 		}
 	}
+
+	return text
 }
 
 func downloader(url string) (resp *http.Response, err error) {
@@ -135,6 +168,7 @@ func downloader(url string) (resp *http.Response, err error) {
 	return
 
 }
+
 func main() {
 
 	log.SetPriorityString("info")
@@ -146,5 +180,22 @@ func main() {
 		log.Fatalln("Missing Url arg")
 	}
 
-	recurDownloader(os.Args[1], 0)
+	file_data := recurDownloader(os.Args[1], 0)
+
+	f, err := os.Create("output.txt")
+	if err != nil {
+		panic(err)
+	}
+	defer func() {
+		if err := f.Close(); err != nil {
+			panic(err)
+		}
+	}()
+	n, err := f.WriteString(file_data)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("wrote %d bytes\n", n)
+	f.Sync()
+
 }
