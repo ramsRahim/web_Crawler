@@ -45,7 +45,7 @@ func (self HttpError) Error() string {
 	return self.original
 }
 
-var MaxDepth = 2
+var MaxDepth = 0
 
 func LinkReader(resp *http.Response, depth int) []Link {
 	page := html.NewTokenizer(resp.Body)
@@ -92,34 +92,47 @@ func LinkReader(resp *http.Response, depth int) []Link {
 	return links
 }
 
-func HtmlParse(resp *http.Response) string {
-	page := html.NewTokenizer(resp.Body)
+func HtmlParse(resp *http.Response) {
+	tkn := html.NewTokenizer(resp.Body)
 
-	//var start *html.Token
-	text := ""
+	var vals = ""
+	var isP bool
 
 	for {
-		_ = page.Next()
-		token := page.Token()
-		if token.Type == html.ErrorToken {
-			break
-		}
 
-		/* if start != nil && token.Type == html.TextToken {
-			text = fmt.Sprintf("%s%s", text, token.Data)
-		} */
+		tt := tkn.Next()
 
-		if token.DataAtom == atom.P {
-			text += token.Data
-			fmt.Printf("%s", text)
-		}
-		if token.DataAtom == atom.Span {
-			text += token.Data
-			fmt.Printf("%s", text)
+		switch {
+
+		case tt == html.ErrorToken:
+			return
+
+		case tt == html.StartTagToken:
+
+			t := tkn.Token()
+			isP = t.Data == "p" || t.Data == "span"
+
+		case tt == html.TextToken:
+
+			t := tkn.Token()
+
+			if isP {
+				vals += t.Data
+				f, err := os.OpenFile("output.txt", os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0600)
+				if err != nil {
+					panic(err)
+				}
+
+				defer f.Close()
+
+				if _, err = f.WriteString(vals); err != nil {
+					panic(err)
+				}
+			}
+
+			isP = false
 		}
 	}
-
-	return text
 }
 
 func NewLink(tag html.Token, text string, depth int) Link {
@@ -133,14 +146,14 @@ func NewLink(tag html.Token, text string, depth int) Link {
 	return link
 }
 
-func recurDownloader(url string, depth int) string {
+func recurDownloader(url string, depth int) {
 	page, err := downloader(url)
 	if err != nil {
 		log.Error(err)
-		return "error"
+		return
 	}
-	text := ""
-	text += HtmlParse(page)
+	HtmlParse(page)
+
 	//fmt.Printf("%s", text)
 	links := LinkReader(page, depth)
 	for _, link := range links {
@@ -148,8 +161,6 @@ func recurDownloader(url string, depth int) string {
 			recurDownloader(link.url, depth+1)
 		}
 	}
-
-	return text
 }
 
 func downloader(url string) (resp *http.Response, err error) {
@@ -180,22 +191,6 @@ func main() {
 		log.Fatalln("Missing Url arg")
 	}
 
-	file_data := recurDownloader(os.Args[1], 0)
-
-	f, err := os.Create("output.txt")
-	if err != nil {
-		panic(err)
-	}
-	defer func() {
-		if err := f.Close(); err != nil {
-			panic(err)
-		}
-	}()
-	n, err := f.WriteString(file_data)
-	if err != nil {
-		panic(err)
-	}
-	fmt.Printf("wrote %d bytes\n", n)
-	f.Sync()
+	recurDownloader(os.Args[1], 0)
 
 }
