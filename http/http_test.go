@@ -69,3 +69,26 @@ func TestReadRss(t *testing.T) {
 		server.Close()
 	}
 }
+
+func TestError(t *testing.T) {
+
+	tests := []struct {
+		url     string
+		wantErr bool
+	}{
+		{"https://www.cobaltspeech.com", false},
+		{"", true},
+		//{"https://jsonplaceholder.typicode.com/posts", true},
+	}
+
+	for _, tc := range tests {
+		_, err1 := GetText(tc.url)
+		_, err2 := ReadRSS(tc.url)
+
+		if !tc.wantErr && err1 != nil && err2 != nil {
+			t.Errorf("didn't expect an error but returned one")
+		} else if tc.wantErr && err1 == nil && err2 == nil {
+			t.Errorf("expected an error but didn't return one")
+		}
+	}
+}
