@@ -35,3 +35,37 @@ func TestGetText(t *testing.T) {
 		server.Close()
 	}
 }
+
+func TestReadRss(t *testing.T) {
+
+	tests := []struct {
+		serverStatus   int
+		serverResponse []byte
+		want           []string
+		wantErr        bool
+	}{
+		{http.StatusOK, []byte("<item><link>Hello World</link></item><item><link>Rahim</link></item>"), []string{"Hello World", "Rahim"}, false},
+		{http.StatusOK, []byte("<item><link>Hello World</link</item><item><link>Rahim</link</item>"), nil, true},
+	}
+
+	for _, tc := range tests {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(tc.serverStatus)
+			w.Write(tc.serverResponse)
+		}))
+		got, err := ReadRSS(server.URL)
+		if !tc.wantErr && err != nil {
+			t.Errorf("didn't expect error but returned one, %v", err)
+		} else if len(got) != len(tc.want) {
+			t.Errorf("output didn't match")
+		} else {
+			for i, g := range tc.want {
+				if diff := cmp.Diff(g, got[i]); diff != "" {
+					t.Errorf("diff %s", diff)
+				}
+			}
+		}
+
+		server.Close()
+	}
+}
